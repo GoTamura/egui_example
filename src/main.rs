@@ -18,15 +18,14 @@ enum Event {
 
 /// This is the repaint signal type that egui needs for requesting a repaint from another thread.
 /// It sends the custom RequestRedraw event to the winit event loop.
-struct ExampleRepaintSignal(std::sync::Mutex<winit::event_loop::EventLoopProxy<Event>>);
+struct ExampleRepaintSignal();//std::sync::Mutex<winit::event_loop::EventLoopProxy<Event>>);
 
 impl epi::RepaintSignal for ExampleRepaintSignal {
     fn request_repaint(&self) {
-        self.0.lock().unwrap().send_event(Event::RequestRedraw).ok();
+        //self.0.lock().unwrap().send_event(Event::RequestRedraw).ok();
     }
 }
 
-/// A simple egui + wgpu + winit based example.
 fn main() {
     let event_loop = winit::event_loop::EventLoop::with_user_event();
     let window = winit::window::WindowBuilder::new()
@@ -41,26 +40,63 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        //wgpu_subscriber::initialize_default_subscriber(None);
+        // Temporarily avoid srgb formats for the swapchain on the web
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            //run(event_loop, window, wgpu::TextureFormat::Bgra8UnormSrgb).await;
+            run(event_loop, window).await;
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+        let query_string = web_sys::window().unwrap().location().search().unwrap();
+        let level: log::Level = parse_url_query_string(&query_string, "RUST_LOG")
+            .map(|x| x.parse().ok())
+            .flatten()
+            .unwrap_or(log::Level::Error);
+        console_log::init_with_level(level).expect("could not initialize logger");
+        std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+        // On wasm, append the canvas to the document body
+        web_sys::window()
+            .and_then(|win| win.document())
+            .and_then(|doc| doc.body())
+            .and_then(|body| {
+                body.append_child(&web_sys::Element::from(window.canvas()))
+                    .ok()
+            })
+            .expect("couldn't append canvas to document body");
+        use wasm_bindgen::{prelude::*, JsCast};
+        wasm_bindgen_futures::spawn_local(async move {
+            let run = run(event_loop, window).await;
+          });
+    }
+}
+
+/// A simple egui + wgpu + winit based example.
+async fn run(event_loop: winit::event_loop::EventLoop<Event>, window: winit::window::Window) {
+
+    let backend = wgpu::util::backend_bits_from_env().unwrap_or_else(wgpu::Backends::all);
+    let instance = wgpu::Instance::new(backend);
     let surface = unsafe { instance.create_surface(&window) };
 
-    // WGPU 0.11+ support force fallback (if HW implementation not supported), set it to true or false (optional).
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        compatible_surface: Some(&surface),
-        force_fallback_adapter: false,
-    }))
-    .unwrap();
+    let adapter =
+        wgpu::util::initialize_adapter_from_env_or_default(&instance, backend, Some(&surface))
+            .await
+            .expect("No suitable GPU adapters found on the system!");
 
-    let (mut device, mut queue) = pollster::block_on(adapter.request_device(
+    let (mut device, mut queue) = adapter.request_device(
         &wgpu::DeviceDescriptor {
             features: wgpu::Features::default(),
-            limits: wgpu::Limits::default(),
+            limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
             label: None,
         },
         None,
-    ))
-    .unwrap();
+    ).await.expect("Unable to find a suitable GPU adapter!");
 
     let size = window.inner_size();
     let surface_format = surface.get_preferred_format(&adapter).unwrap();
@@ -73,9 +109,9 @@ fn main() {
     };
     surface.configure(&device, &surface_config);
 
-    let repaint_signal = std::sync::Arc::new(ExampleRepaintSignal(std::sync::Mutex::new(
-        event_loop.create_proxy(),
-    )));
+    let repaint_signal = std::sync::Arc::new(ExampleRepaintSignal{});//std::sync::Mutex::new(
+    //    event_loop.create_proxy(),
+    //)));
 
     // We use the egui_winit_platform crate as the platform.
     let mut platform = Platform::new(PlatformDescriptor {
@@ -92,15 +128,15 @@ fn main() {
     // Display the demo application that ships with egui.
     let mut demo_app = egui_demo_lib::WrapApp::default();
 
-    let start_time = Instant::now();
-    let mut previous_frame_time = None;
+    //let start_time = Instant::now();
+    //let mut previous_frame_time = None;
     event_loop.run(move |event, _, control_flow| {
         // Pass the winit events to the platform integration.
         platform.handle_event(&event);
 
         match event {
             RedrawRequested(..) => {
-                platform.update_time(start_time.elapsed().as_secs_f64());
+                //platform.update_time(start_time.elapsed().as_secs_f64());
 
                 let output_frame = match surface.get_current_texture() {
                     Ok(frame) => frame,
@@ -114,15 +150,15 @@ fn main() {
                     .create_view(&wgpu::TextureViewDescriptor::default());
 
                 // Begin to draw the UI frame.
-                let egui_start = Instant::now();
+                //let egui_start = Instant::now();
                 platform.begin_frame();
                 let mut app_output = epi::backend::AppOutput::default();
 
                 let mut frame = epi::backend::FrameBuilder {
                     info: epi::IntegrationInfo {
                         web_info: None,
-                        cpu_usage: previous_frame_time,
-                        seconds_since_midnight: Some(seconds_since_midnight()),
+                        cpu_usage: None,
+                        seconds_since_midnight: None,
                         native_pixels_per_point: Some(window.scale_factor() as _),
                         prefer_dark_mode: None,
                     },
@@ -139,8 +175,8 @@ fn main() {
                 let (_output, paint_commands) = platform.end_frame(Some(&window));
                 let paint_jobs = platform.context().tessellate(paint_commands);
 
-                let frame_time = (Instant::now() - egui_start).as_secs_f64() as f32;
-                previous_frame_time = Some(frame_time);
+                //let frame_time = (Instant::now() - egui_start).as_secs_f64() as f32;
+                //previous_frame_time = Some(frame_time);
 
                 let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("encoder"),
@@ -199,7 +235,26 @@ fn main() {
 }
 
 /// Time of day as seconds since midnight. Used for clock in demo app.
-pub fn seconds_since_midnight() -> f64 {
-    let time = chrono::Local::now().time();
-    time.num_seconds_from_midnight() as f64 + 1e-9 * (time.nanosecond() as f64)
+//pub fn seconds_since_midnight() -> f64 {
+//    let time = chrono::Local::now().time();
+//    time.num_seconds_from_midnight() as f64 + 1e-9 * (time.nanosecond() as f64)
+//}
+
+#[cfg(target_arch = "wasm32")]
+/// Parse the query string as returned by `web_sys::window()?.location().search()?` and get a
+/// specific key out of it.
+pub fn parse_url_query_string<'a>(query: &'a str, search_key: &str) -> Option<&'a str> {
+    let query_string = query.strip_prefix('?')?;
+
+    for pair in query_string.split('&') {
+        let mut pair = pair.split('=');
+        let key = pair.next()?;
+        let value = pair.next()?;
+
+        if key == search_key {
+            return Some(value);
+        }
+    }
+
+    None
 }
